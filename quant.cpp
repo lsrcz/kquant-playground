@@ -7,10 +7,12 @@
 
 namespace quant {
 template <>
-void Quantize<8>(const float *QUANT_RESTRICT input, size_t num_elements,
-                 QuantBlock<8> *QUANT_RESTRICT output) {
+void Quantize<8>(std::span<const float> input,
+                 std::span<QuantBlock<8>> output) {
+  const size_t num_elements = input.size();
   assert(num_elements % kSuperBlockSize == 0);
-  const int num_super_blocks = num_elements / kSuperBlockSize;
+  const size_t num_super_blocks = output.size();
+  assert(num_super_blocks == num_elements / kSuperBlockSize);
 
   for (int i = 0; i < num_super_blocks; ++i) {
 
@@ -23,37 +25,40 @@ void Quantize<8>(const float *QUANT_RESTRICT input, size_t num_elements,
         value_with_max_abs = input[j];
       }
     }
-    if (!max_abs_value) {
+    if (max_abs_value == 0) {
       output[i].scale = 0;
-      memset(output[i].quants, 0, kSuperBlockSize);
-      input += kSuperBlockSize;
+      memset(output[i].quants.data(), 0, kSuperBlockSize);
+      input = input.subspan(kSuperBlockSize);
       continue;
     }
-    const float reciprocal_scale = -128.f / value_with_max_abs;
+    const float reciprocal_scale = -128.F / value_with_max_abs;
     for (int j = 0; j < kSuperBlockSize; ++j) {
-      output[i].quants[j] =
-          std::min(127, NearestInt(reciprocal_scale * input[j]));
+      output[i].quants[j] = static_cast<int8_t>(
+          std::min(127, NearestInt(reciprocal_scale * input[j])));
     }
     for (int j = 0; j < kSuperBlockSize / 16; ++j) {
-      int sum = 0;
+      int16_t sum = 0;
       for (int k = 0; k < 16; ++k) {
-        sum += output[i].quants[j * 16 + k];
+        sum += static_cast<int16_t>(output[i].quants[j * 16 + k]);
       }
       output[i].block_sum_of_quants[j] = sum;
     }
     output[i].scale = 1 / reciprocal_scale;
-    input += kSuperBlockSize;
+    input = input.subspan(kSuperBlockSize);
   }
 }
+
 template <>
-void Dequantize(const QuantBlock<8> *QUANT_RESTRICT input, size_t num_elements,
-                float *QUANT_RESTRICT output) {
-  assert(num_elements % kSuperBlockSize == 0);
-  const int num_super_blocks = num_elements / kSuperBlockSize;
+void Dequantize<8>(std::span<const QuantBlock<8>> input,
+                   std::span<float> output) {
+  const size_t num_super_blocks = input.size();
+  assert(output.size() == num_super_blocks * kSuperBlockSize);
+  const size_t num_elements = output.size();
 
   for (int i = 0; i < num_super_blocks; ++i) {
     for (int j = 0; j < kSuperBlockSize; ++j) {
-      output[j] = input[i].scale * input[i].quants[j];
+      output[i * kSuperBlockSize + j] =
+          input[i].scale * static_cast<float>(input[i].quants[j]);
     }
   }
 }

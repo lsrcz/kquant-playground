@@ -7,6 +7,8 @@
 #define QUANT_2BIT_H_
 
 #include "quant.h"
+#include "type.h"
+#include <array>
 
 namespace quant {
 template <> struct QuantBlock<2> {
@@ -16,7 +18,7 @@ template <> struct QuantBlock<2> {
   // Memory layout:
   //   scales_and_negated_minimums[i] is
   //     <negated_minimums[i], scales[i]>
-  uint8_t scales_and_negated_minimums[kSuperBlockSize / 16];
+  std::array<uint8_t, kSuperBlockSize / 16> scales_and_negated_minimums;
   // 256 quants, packed into 512 bits (64 bytes).
   //
   // Memory layout:
@@ -45,7 +47,7 @@ template <> struct QuantBlock<2> {
   // element [160:176] -> quants[32:48], bit [2:4]
   // element [176:192] -> quants[48:64], bit [2:4]
   // ...
-  uint8_t quants[kSuperBlockSize / 4];
+  std::array<uint8_t, kSuperBlockSize / 4> quants;
   // Super block scale for scales
   fp16_t super_block_scale_for_scale;
   // Super block scale for minimums
@@ -53,15 +55,23 @@ template <> struct QuantBlock<2> {
 };
 
 template <>
-void Quantize<2>(const float *QUANT_RESTRICT input, size_t num_elements,
-                 QuantBlock<2> *QUANT_RESTRICT output);
+void Quantize<2>(std::span<const float> input, std::span<QuantBlock<2>> output);
 template <>
-void Dequantize<2>(const QuantBlock<2> *QUANT_RESTRICT input,
-                   size_t num_elements, float *QUANT_RESTRICT output);
+void Dequantize<2>(std::span<const QuantBlock<2>> input,
+                   std::span<float> output);
 template <>
-float DotProduct<2>(const QuantBlock<2> *QUANT_RESTRICT weights,
-                    const QuantBlock<8> *QUANT_RESTRICT input,
-                    size_t num_elements);
+float DotProduct<2, CPUFeature::kDefault>(std::span<QuantBlock<2>> weights,
+                                          std::span<QuantBlock<8>> input);
+
+template <>
+float DotProduct<2, CPUFeature::kNone>(std::span<QuantBlock<2>> weights,
+                                       std::span<QuantBlock<8>> input);
+
+#ifdef __AVX2__
+template <>
+float DotProduct<2, CPUFeature::kAVX2>(std::span<QuantBlock<2>> weights,
+                                       std::span<QuantBlock<8>> input);
+#endif
 
 } // namespace quant
 

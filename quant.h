@@ -2,9 +2,11 @@
 #ifndef QUANT_H_
 #define QUANT_H_
 
-#include "type.h"
+#include "common.h"
+#include <array>
 #include <cstddef>
 #include <cstdint>
+#include <span>
 
 namespace quant {
 constexpr size_t kSuperBlockSize = 256;
@@ -12,29 +14,33 @@ constexpr size_t kSuperBlockSize = 256;
 template <int kQuantBits> struct QuantBlock;
 
 template <int kQuantBits>
-void Quantize(const float *QUANT_RESTRICT input, size_t num_elements,
-              QuantBlock<kQuantBits> *QUANT_RESTRICT output);
+void Quantize(std::span<const float> input,
+              std::span<QuantBlock<kQuantBits>> output);
 template <int kQuantBits>
-void Dequantize(const QuantBlock<kQuantBits> *QUANT_RESTRICT input,
-                size_t num_elements, float *QUANT_RESTRICT output);
-template <int kQuantBits>
-float DotProduct(const QuantBlock<kQuantBits> *QUANT_RESTRICT weights,
-                 const QuantBlock<8> *QUANT_RESTRICT input,
-                 size_t num_elements);
+void Dequantize(std::span<const QuantBlock<kQuantBits>> input,
+                std::span<float> output);
+
+enum class CPUFeature {
+  kDefault = 0,
+  kNone = 1,
+  kAVX2 = 2,
+};
+
+template <int kQuantBits, CPUFeature kFeature = CPUFeature::kDefault>
+float DotProduct(std::span<QuantBlock<kQuantBits>> weights,
+                 std::span<QuantBlock<8>> input);
 
 // 8 bit quantization is special so we include the specialization here.
 template <> struct QuantBlock<8> {
   float scale; // delta
-  int8_t quants[kSuperBlockSize];
-  int16_t block_sum_of_quants[kSuperBlockSize / 16];
+  std::array<int8_t, kSuperBlockSize> quants;
+  std::array<int16_t, kSuperBlockSize / 16> block_sum_of_quants;
 };
 
 template <>
-void Quantize<8>(const float *QUANT_RESTRICT input, size_t num_elements,
-                 QuantBlock<8> *QUANT_RESTRICT output);
+void Quantize<8>(std::span<const float> input, std::span<QuantBlock<8>> output);
 template <>
-void Dequantize(const QuantBlock<8> *QUANT_RESTRICT input, size_t num_elements,
-                float *QUANT_RESTRICT output);
+void Dequantize(std::span<const QuantBlock<8>> input, std::span<float> output);
 
 } // namespace quant
 

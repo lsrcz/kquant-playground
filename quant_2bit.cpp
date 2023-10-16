@@ -2,36 +2,44 @@
 #include "quant_2bit.h"
 #include "common.h"
 #include "helper.h"
+#include "print_simd.h"
 #include "quant.h"
 #include "type.h"
 #include <algorithm>
 #include <cassert>
+#include <cstdio>
 #include <immintrin.h>
 
 namespace quant {
 
 template <>
-void Quantize<2>(const float *QUANT_RESTRICT input, size_t num_elements,
-                 QuantBlock<2> *QUANT_RESTRICT output) {
+void Quantize<2>(std::span<const float> input,
+                 std::span<QuantBlock<2>> output) {
+  const size_t num_elements = input.size();
   assert(num_elements % kSuperBlockSize == 0);
-  const int num_super_blocks = num_elements / kSuperBlockSize;
+  const size_t num_super_blocks = output.size();
+  assert(num_super_blocks == num_elements / kSuperBlockSize);
 
-  const float kQuant4BitMaxQuantLevel = 15.f;
+  const float kQuant4BitMaxQuantLevel = 15.F;
 
-  for (int i = 0; i < num_super_blocks; i++) {
-    uint8_t quants[kSuperBlockSize];
+  for (size_t i = 0; i < num_super_blocks; i++) {
+    std::array<uint8_t, kSuperBlockSize> quants{};
+    auto quants_span = std::span(quants);
     // Minimums and scales for the blocks in the current super block.
-    float negated_minimums[kSuperBlockSize / 16];
-    float scales[kSuperBlockSize / 16];
+    std::array<float, kSuperBlockSize / 16> negated_minimums{};
+    std::array<float, kSuperBlockSize / 16> scales{};
     // As we are deducting the minimum, scales are always positive.
     float max_scale = 0;
     float max_negated_minimum = 0;
-    for (int j = 0; j < kSuperBlockSize / 16; ++j) {
+    for (size_t j = 0; j < kSuperBlockSize / 16; ++j) {
       // Quantize the current block.
       auto [current_block_scale, current_block_negated_minimum] =
-          QuantizeBlockWithMinimum(16, 3, input + 16 * j, quants + 16 * j);
+          QuantizeBlockWithMinimum(3, input.subspan(16 * j, 16),
+                                   quants_span.subspan(16 * j, 16));
+
       scales[j] = current_block_scale;
       negated_minimums[j] = current_block_negated_minimum;
+
       if (current_block_scale > max_scale) {
         max_scale = current_block_scale;
       }
@@ -42,43 +50,45 @@ void Quantize<2>(const float *QUANT_RESTRICT input, size_t num_elements,
 
     // The scales and minimums are furthered quantized to 4 bits.
     if (max_scale > 0) {
-      float reciprocal_super_block_scale = kQuant4BitMaxQuantLevel / max_scale;
+      float reci_scale = kQuant4BitMaxQuantLevel / max_scale;
       for (int j = 0; j < kSuperBlockSize / 16; ++j) {
-        int quantized_scale =
-            NearestInt(reciprocal_super_block_scale * scales[j]);
+        int quantized_scale = NearestInt(reci_scale * scales[j]);
         output[i].scales_and_negated_minimums[j] = quantized_scale;
       }
       output[i].super_block_scale_for_scale =
           Fp32ToFp16(max_scale / kQuant4BitMaxQuantLevel);
     } else {
-      for (int j = 0; j < kSuperBlockSize / 16; ++j) {
-        output[i].scales_and_negated_minimums[j] = 0;
-      }
-      output[i].super_block_scale_for_scale = Fp32ToFp16(0.f);
+      std::fill(std::begin(output[i].scales_and_negated_minimums),
+                std::end(output[i].scales_and_negated_minimums), 0);
+      output[i].super_block_scale_for_scale = Fp32ToFp16(0.F);
     }
     if (max_negated_minimum > 0) {
       float reciprocal_super_block_negated_minimum_scale =
           kQuant4BitMaxQuantLevel / max_negated_minimum;
       for (int j = 0; j < kSuperBlockSize / 16; ++j) {
-        int quantized_negated_minimum = NearestInt(
+        uint8_t quantized_negated_minimum = NearestInt(
             reciprocal_super_block_negated_minimum_scale * negated_minimums[j]);
         output[i].scales_and_negated_minimums[j] |=
-            (quantized_negated_minimum << 4);
+            static_cast<uint8_t>(quantized_negated_minimum << uint8_t{4});
       }
       output[i].super_block_scale_for_minimum =
           Fp32ToFp16(max_negated_minimum / kQuant4BitMaxQuantLevel);
     } else {
-      output[i].super_block_scale_for_minimum = Fp32ToFp16(0.f);
+      output[i].super_block_scale_for_minimum = Fp32ToFp16(0.F);
     }
+
     for (int j = 0; j < kSuperBlockSize / 16; ++j) {
       const float reconstructed_scale =
           Fp16ToFp32(output[i].super_block_scale_for_scale) *
-          (output[i].scales_and_negated_minimums[j] & 0xF);
-      if (!reconstructed_scale)
+          static_cast<float>(output[i].scales_and_negated_minimums[j] &
+                             uint8_t{0xF});
+      if (reconstructed_scale == 0) {
         continue;
+      }
       const float reconstructed_negated_minimum =
           Fp16ToFp32(output[i].super_block_scale_for_minimum) *
-          (output[i].scales_and_negated_minimums[j] >> 4);
+          static_cast<float>(output[i].scales_and_negated_minimums[j] >>
+                             uint8_t{4});
       for (int k = 0; k < 16; ++k) {
         int quant =
             NearestInt((input[16 * j + k] + reconstructed_negated_minimum) /
@@ -89,30 +99,33 @@ void Quantize<2>(const float *QUANT_RESTRICT input, size_t num_elements,
 
     for (int j = 0; j < kSuperBlockSize; j += 128) {
       for (int k = 0; k < 32; ++k) {
+
         output[i].quants[j / 4 + k] =
-            quants[j + k] | (quants[j + k + 32] << 2) |
-            (quants[j + k + 64] << 4) | (quants[j + k + 96] << 6);
+            static_cast<uint32_t>(quants[j + k]) |
+            static_cast<uint32_t>(quants[j + k + 32] << uint8_t{2}) |
+            static_cast<uint32_t>(quants[j + k + 64] << uint8_t{4}) |
+            static_cast<uint32_t>(quants[j + k + 96] << uint8_t{6});
       }
     }
-    input += kSuperBlockSize;
+    input = input.subspan(kSuperBlockSize);
   }
 }
 
 template <>
-void Dequantize<2>(const QuantBlock<2> *QUANT_RESTRICT input,
-                   size_t num_elements, float *QUANT_RESTRICT output) {
-  assert(num_elements % kSuperBlockSize == 0);
-  const int num_super_blocks = num_elements / kSuperBlockSize;
+void Dequantize<2>(std::span<const QuantBlock<2>> input,
+                   std::span<float> output) {
+  const size_t num_super_blocks = input.size();
+  assert(output.size() == num_super_blocks * kSuperBlockSize);
+  const size_t num_elements = output.size();
 
   for (int i = 0; i < num_super_blocks; ++i) {
     const float scale_for_scale =
         Fp16ToFp32(input[i].super_block_scale_for_scale);
     const float scale_for_minimum =
         Fp16ToFp32(input[i].super_block_scale_for_minimum);
-    const uint8_t *quants = input[i].quants;
+    auto quants = std::span{input[i].quants};
 
     for (int j = 0; j < 2; ++j) {
-      QUANT_PRAGMA_UNROLL
       for (int k = 0; k < 4; ++k) {
         QUANT_PRAGMA_UNROLL
         for (int l = 0; l < 2; ++l) {
@@ -126,16 +139,70 @@ void Dequantize<2>(const QuantBlock<2> *QUANT_RESTRICT input,
           float scale = scale_for_scale * (scale_and_negated_minimum & 0xF);
           float negated_minimum =
               scale_for_minimum * (scale_and_negated_minimum >> 4);
+          QUANT_PRAGMA_UNROLL
           for (int m = 0; m < 16; ++m) {
-            *output++ =
-                scale *
-                    ((quants[quants_addr_offset + m] >> quants_shift) & 0b11) -
+            output[i * 256 + j * 128 + k * 32 + l * 16 + m] =
+                scale * (static_cast<uint32_t>(quants[quants_addr_offset + m] >>
+                                               quants_shift) &
+                         0b11) -
                 negated_minimum;
           }
         }
       }
     }
   }
+}
+
+template <>
+float DotProduct<2, CPUFeature::kNone>(std::span<QuantBlock<2>> weights,
+                                       std::span<QuantBlock<8>> input) {
+  const size_t num_super_blocks = weights.size();
+
+  float accumulator = 0;
+  for (size_t super_block_id = 0; super_block_id < num_super_blocks;
+       ++super_block_id) {
+    const auto &weights_quants = weights[super_block_id].quants;
+    const auto &inputs_quants = input[super_block_id].quants;
+    const auto &weights_scales_and_negated_minimums =
+        weights[super_block_id].scales_and_negated_minimums;
+
+    int minimum_sum = 0;
+    // accumulate the minimums.
+    for (int j = 0; j < 16; ++j) {
+      minimum_sum += input[super_block_id].block_sum_of_quants[j] *
+                     (weights_scales_and_negated_minimums[j] >> 4);
+    }
+    accumulator -=
+        input[super_block_id].scale *
+        Fp16ToFp32(weights[super_block_id].super_block_scale_for_minimum) *
+        minimum_sum;
+
+    int sum = 0;
+    for (int j = 0; j < 2; ++j) {
+      for (int k = 0; k < 4; ++k) {
+        int weights_quants_shift = k * 2;
+        for (int l = 0; l < 2; ++l) {
+          int block_id = j * 8 + k * 2 + l;
+          int input_quants_addr_offset = j * 128 + k * 32 + l * 16;
+          int weights_quants_addr_offset = j * 32 + l * 16;
+          int block_product = 0;
+          for (int m = 0; m < 16; ++m) {
+            block_product += inputs_quants[input_quants_addr_offset + m] *
+                             ((weights_quants[weights_quants_addr_offset + m] >>
+                               weights_quants_shift) &
+                              3);
+          }
+          sum += (weights_scales_and_negated_minimums[block_id] & 0xF) *
+                 block_product;
+        }
+      }
+    }
+    accumulator +=
+        input[super_block_id].scale *
+        Fp16ToFp32(weights[super_block_id].super_block_scale_for_scale) * sum;
+  }
+
+  return accumulator;
 }
 
 #ifdef __AVX2__
@@ -146,11 +213,10 @@ void Dequantize<2>(const QuantBlock<2> *QUANT_RESTRICT input,
 //     weights.minimum[block_id] *
 //     input.block_sum[block_id] ) +
 //   ( undefined )
-float DotProduct2BitAVX2(const QuantBlock<2> *QUANT_RESTRICT weights,
-                         const QuantBlock<8> *QUANT_RESTRICT input,
-                         size_t num_elements) {
-  assert(num_elements % kSuperBlockSize == 0);
-  const int num_super_blocks = num_elements / kSuperBlockSize;
+template <>
+float DotProduct<2, CPUFeature::kAVX2>(std::span<QuantBlock<2>> weights,
+                                       std::span<QuantBlock<8>> input) {
+  const size_t num_super_blocks = weights.size();
 
   // [32 x i8], filled with 0b00000011
   const __m256i kQuantMask = _mm256_set1_epi8(3);
@@ -159,18 +225,17 @@ float DotProduct2BitAVX2(const QuantBlock<2> *QUANT_RESTRICT weights,
 
   __m256 accumulator = _mm256_setzero_ps();
 
-  for (int i = 0; i < num_super_blocks; ++i) {
-
+  for (size_t i = 0; i < num_super_blocks; ++i) {
     // Step 1: we multiply the scales for inputs and weights.
-    const float multiplied_super_block_scale_for_scale =
+    const float prod_scale_for_scale =
         input[i].scale * Fp16ToFp32(weights[i].super_block_scale_for_scale);
-    const float negated_multiplied_super_block_scale_for_minimum =
+    const float prod_scale_for_minimum =
         -input[i].scale * Fp16ToFp32(weights[i].super_block_scale_for_minimum);
 
     // Step 2: Load the scales and negated minimums for the weights.
     const __m128i weights_scales_and_negated_minimums =
         _mm_loadu_si128(reinterpret_cast<const __m128i *>(
-            weights[i].scales_and_negated_minimums));
+            weights[i].scales_and_negated_minimums.data()));
     // [16 x i8], lower-bits for each 8-bit element is the scale
     const __m128i weights_scales = _mm_and_si128(
         weights_scales_and_negated_minimums, kScaleAndMinimumMask);
@@ -178,16 +243,15 @@ float DotProduct2BitAVX2(const QuantBlock<2> *QUANT_RESTRICT weights,
     const __m128i weights_negated_minimums =
         _mm_and_si128(_mm_srli_epi16(weights_scales_and_negated_minimums, 4),
                       kScaleAndMinimumMask);
-
     // Step 3: accumulate the minimums to the accumulator. We need to multiply
     // the minimums with the block sums.
     const __m256i block_minimum_offset =
-        _mm256_add_epi16(_mm256_cvtepi8_epi16(weights_negated_minimums),
-                         _mm256_loadu_si256(reinterpret_cast<const __m256i *>(
-                             input[i].block_sum_of_quants)));
-    accumulator = _mm256_fmadd_ps(
-        _mm256_broadcast_ss(&negated_multiplied_super_block_scale_for_minimum),
-        _mm256_cvtepi32_ps(block_minimum_offset), accumulator);
+        _mm256_madd_epi16(_mm256_cvtepi8_epi16(weights_negated_minimums),
+                          _mm256_loadu_si256(reinterpret_cast<const __m256i *>(
+                              input[i].block_sum_of_quants.data())));
+    accumulator =
+        _mm256_fmadd_ps(_mm256_broadcast_ss(&prod_scale_for_minimum),
+                        _mm256_cvtepi32_ps(block_minimum_offset), accumulator);
 
     // [16 x i16], lower 4 bits for each 16-bit element is the scale
     const __m256i weights_scales_epi16 = _mm256_cvtepi8_epi16(weights_scales);
@@ -214,8 +278,8 @@ float DotProduct2BitAVX2(const QuantBlock<2> *QUANT_RESTRICT weights,
         Pack128Into256(weights_scales_epi16_low, weights_scales_epi16_low),
         Pack128Into256(weights_scales_epi16_high, weights_scales_epi16_high)};
 
-    const uint8_t *QUANT_RESTRICT weights_quants = weights[i].quants;
-    const int8_t *QUANT_RESTRICT input_quants = input[i].quants;
+    const uint8_t *QUANT_RESTRICT weights_quants = weights[i].quants.data();
+    const int8_t *QUANT_RESTRICT input_quants = input[i].quants.data();
 
     __m256i sum = _mm256_setzero_si256();
     for (int j = 0; j < 2; ++j) {
@@ -312,9 +376,8 @@ float DotProduct2BitAVX2(const QuantBlock<2> *QUANT_RESTRICT weights,
       sum = _mm256_add_epi32(sum, _mm256_add_epi32(p0, p2));
     }
 
-    accumulator = _mm256_fmadd_ps(
-        _mm256_broadcast_ss(&multiplied_super_block_scale_for_scale),
-        _mm256_cvtepi32_ps(sum), accumulator);
+    accumulator = _mm256_fmadd_ps(_mm256_broadcast_ss(&prod_scale_for_scale),
+                                  _mm256_cvtepi32_ps(sum), accumulator);
   }
 
   return HSum8Floats(accumulator);
@@ -322,13 +385,12 @@ float DotProduct2BitAVX2(const QuantBlock<2> *QUANT_RESTRICT weights,
 #endif
 
 template <>
-float DotProduct<2>(const QuantBlock<2> *QUANT_RESTRICT weights,
-                    const QuantBlock<8> *QUANT_RESTRICT input,
-                    size_t num_elements) {
+float DotProduct<2, CPUFeature::kDefault>(std::span<QuantBlock<2>> weights,
+                                          std::span<QuantBlock<8>> input) {
 #ifdef __AVX2__
-  return DotProduct2BitAVX2(weights, input, num_elements);
+  return DotProduct<2, CPUFeature::kAVX2>(weights, input);
 #else
-  static_assert(false, "Not implemented.");
+  return DotProduct<2, CPUFeature::kNone>(weights, input);
 #endif
 }
 
