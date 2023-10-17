@@ -16,7 +16,8 @@
 #include <immintrin.h>
 
 namespace quant {
-template <CPUFeature kFeature> struct QuantBlock<2, kFeature> {
+template <CPUFeature kFeature> struct QuantBlock<2, kFeature, 256> {
+  static constexpr size_t kSuperBlockSize = 256;
   // 16 blocks per super block, quantized with 4 bits.
   // Lower 4 bits are for scales, higher 4 bits are for negated minimums.
   //
@@ -59,10 +60,10 @@ template <CPUFeature kFeature> struct QuantBlock<2, kFeature> {
   fp16_t super_block_scale_for_minimum;
 };
 
-template <int kQuantBits, CPUFeature kFeature>
-  requires(kQuantBits == 2)
+template <int kQuantBits, CPUFeature kFeature, size_t kSuperBlockSize>
+  requires(kQuantBits == 2) && (kSuperBlockSize == 256)
 void Quantize(std::span<const float> input,
-              std::span<QuantBlock<2, kFeature>> output) {
+              std::span<QuantBlock<2, kFeature, kSuperBlockSize>> output) {
   const size_t num_elements = input.size();
   assert(num_elements % kSuperBlockSize == 0);
   const size_t num_super_blocks = output.size();
@@ -159,9 +160,9 @@ void Quantize(std::span<const float> input,
   }
 }
 
-template <int kQuantBits, CPUFeature kFeature>
-  requires(kQuantBits == 2)
-void Dequantize(std::span<const QuantBlock<2, kFeature>> input,
+template <int kQuantBits, CPUFeature kFeature, size_t kSuperBlockSize>
+  requires(kQuantBits == 2) && (kSuperBlockSize == 256)
+void Dequantize(std::span<const QuantBlock<2, kFeature, kSuperBlockSize>> input,
                 std::span<float> output) {
   const size_t num_super_blocks = input.size();
   assert(output.size() == num_super_blocks * kSuperBlockSize);
@@ -202,10 +203,11 @@ void Dequantize(std::span<const QuantBlock<2, kFeature>> input,
   }
 }
 
-template <int kQuantBits, CPUFeature kFeature>
-  requires(kQuantBits == 2) && (kFeature == CPUFeature::kNone)
-float DotProduct(std::span<QuantBlock<2, CPUFeature::kNone>> weights,
-                 std::span<QuantBlock<8, CPUFeature::kNone>> input) {
+template <int kQuantBits, CPUFeature kFeature, size_t kSuperBlockSize>
+  requires(kQuantBits == 2) && (kFeature == CPUFeature::kNone) &&
+          (kSuperBlockSize == 256)
+float DotProduct(std::span<QuantBlock<2, CPUFeature::kNone, 256>> weights,
+                 std::span<QuantBlock<8, CPUFeature::kNone, 256>> input) {
   const size_t num_super_blocks = weights.size();
 
   float accumulator = 0;
@@ -263,10 +265,11 @@ float DotProduct(std::span<QuantBlock<2, CPUFeature::kNone>> weights,
 //     weights.minimum[block_id] *
 //     input.block_sum[block_id] ) +
 //   ( undefined )
-template <int kQuantBits, CPUFeature kFeature>
-  requires(kQuantBits == 2) && (kFeature == CPUFeature::kAVX2)
-float DotProduct(std::span<QuantBlock<2, CPUFeature::kAVX2>> weights,
-                 std::span<QuantBlock<8, CPUFeature::kAVX2>> input) {
+template <int kQuantBits, CPUFeature kFeature, size_t kSuperBlockSize>
+  requires(kQuantBits == 2) && (kFeature == CPUFeature::kAVX2) &&
+          (kSuperBlockSize == 256)
+float DotProduct(std::span<QuantBlock<2, CPUFeature::kAVX2, 256>> weights,
+                 std::span<QuantBlock<8, CPUFeature::kAVX2, 256>> input) {
   const size_t num_super_blocks = weights.size();
 
   // [32 x i8], filled with 0b00000011

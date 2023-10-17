@@ -12,7 +12,6 @@
 #include <span>
 
 namespace quant {
-constexpr size_t kSuperBlockSize = 256;
 
 enum class CPUFeature {
   kNone = 0,
@@ -25,30 +24,38 @@ constexpr CPUFeature kDefaultCPUFeature = CPUFeature::kAVX2;
 constexpr CPUFeature kDefaultCPUFeature = CPUFeature::kNone;
 #endif
 
-template <int kQuantBits, CPUFeature kFeature> struct QuantBlock;
+template <int kQuantBits, CPUFeature kFeature, size_t kSuperBlockSize>
+struct QuantBlock;
 
-template <int kQuantBits, CPUFeature kFeature = kDefaultCPUFeature>
+template <int kQuantBits, CPUFeature kFeature = kDefaultCPUFeature,
+          size_t kSuperBlockSize = 256>
 void Quantize(std::span<const float> input,
-              std::span<QuantBlock<kQuantBits, kFeature>> output) = delete;
-template <int kQuantBits, CPUFeature kFeature = kDefaultCPUFeature>
-void Dequantize(std::span<const QuantBlock<kQuantBits, kFeature>> input,
-                std::span<float> output) = delete;
+              std::span<QuantBlock<kQuantBits, kFeature, kSuperBlockSize>>
+                  output) = delete;
+template <int kQuantBits, CPUFeature kFeature = kDefaultCPUFeature,
+          size_t kSuperBlockSize = 256>
+void Dequantize(
+    std::span<const QuantBlock<kQuantBits, kFeature, kSuperBlockSize>> input,
+    std::span<float> output) = delete;
 
-template <int kQuantBits, CPUFeature kFeature = kDefaultCPUFeature>
-float DotProduct(std::span<QuantBlock<kQuantBits, kFeature>> weights,
-                 std::span<QuantBlock<8, kFeature>> input) = delete;
+template <int kQuantBits, CPUFeature kFeature = kDefaultCPUFeature,
+          size_t kSuperBlockSize = 256>
+float DotProduct(
+    std::span<QuantBlock<kQuantBits, kFeature, kSuperBlockSize>> weights,
+    std::span<QuantBlock<8, kFeature, kSuperBlockSize>> input) = delete;
 
 // 8 bit quantization is special so we include the specialization here.
-template <CPUFeature kFeature> struct QuantBlock<8, kFeature> {
+template <CPUFeature kFeature> struct QuantBlock<8, kFeature, 256> {
+  static constexpr size_t kSuperBlockSize = 256;
   float scale; // delta
   std::array<int8_t, kSuperBlockSize> quants;
   std::array<int16_t, kSuperBlockSize / 16> block_sum_of_quants;
 };
 
-template <int kQuantBits, CPUFeature kFeature>
-  requires(kQuantBits == 8)
+template <int kQuantBits, CPUFeature kFeature, size_t kSuperBlockSize>
+  requires(kQuantBits == 8) && (kSuperBlockSize == 256)
 void Quantize(std::span<const float> input,
-              std::span<QuantBlock<8, kFeature>> output) {
+              std::span<QuantBlock<8, kFeature, 256>> output) {
   const size_t num_elements = input.size();
   assert(num_elements % kSuperBlockSize == 0);
   const size_t num_super_blocks = output.size();
@@ -88,10 +95,11 @@ void Quantize(std::span<const float> input,
   }
 }
 
-template <int kQuantBits, CPUFeature kFeature>
-  requires(kQuantBits == 8)
-void Dequantize(std::span<const QuantBlock<8, kFeature>> input,
+template <int kQuantBits, CPUFeature kFeature, size_t kSuperBlockSize>
+  requires(kQuantBits == 8) && (kSuperBlockSize == 256)
+void Dequantize(std::span<const QuantBlock<8, kFeature, kSuperBlockSize>> input,
                 std::span<float> output) {
+
   const size_t num_super_blocks = input.size();
   assert(output.size() == num_super_blocks * kSuperBlockSize);
   const size_t num_elements = output.size();
