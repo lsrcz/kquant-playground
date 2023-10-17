@@ -2,10 +2,10 @@
 #ifndef QUANT_H_
 #define QUANT_H_
 
-#include "common.h"
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <span>
 
 namespace quant {
@@ -21,12 +21,17 @@ void Dequantize(std::span<const QuantBlock<kQuantBits>> input,
                 std::span<float> output);
 
 enum class CPUFeature {
-  kDefault = 0,
-  kNone = 1,
-  kAVX2 = 2,
+  kNone = 0,
+  kAVX2 = 1,
 };
 
-template <int kQuantBits, CPUFeature kFeature = CPUFeature::kDefault>
+#ifdef __AVX2__
+constexpr CPUFeature kDefaultCPUFeature = CPUFeature::kAVX2;
+#else
+constexpr CPUFeature kDefaultCPUFeature = CPUFeature::kNone;
+#endif
+
+template <int kQuantBits, CPUFeature kFeature = kDefaultCPUFeature>
 float DotProduct(std::span<QuantBlock<kQuantBits>> weights,
                  std::span<QuantBlock<8>> input);
 

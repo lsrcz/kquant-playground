@@ -384,14 +384,4 @@ float DotProduct<2, CPUFeature::kAVX2>(std::span<QuantBlock<2>> weights,
 }
 #endif
 
-template <>
-float DotProduct<2, CPUFeature::kDefault>(std::span<QuantBlock<2>> weights,
-                                          std::span<QuantBlock<8>> input) {
-#ifdef __AVX2__
-  return DotProduct<2, CPUFeature::kAVX2>(weights, input);
-#else
-  return DotProduct<2, CPUFeature::kNone>(weights, input);
-#endif
-}
-
 } // namespace quant

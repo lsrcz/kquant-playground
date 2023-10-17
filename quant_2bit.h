@@ -59,9 +59,6 @@ void Quantize<2>(std::span<const float> input, std::span<QuantBlock<2>> output);
 template <>
 void Dequantize<2>(std::span<const QuantBlock<2>> input,
                    std::span<float> output);
-template <>
-float DotProduct<2, CPUFeature::kDefault>(std::span<QuantBlock<2>> weights,
-                                          std::span<QuantBlock<8>> input);
 
 template <>
 float DotProduct<2, CPUFeature::kNone>(std::span<QuantBlock<2>> weights,
