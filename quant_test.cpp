@@ -59,8 +59,12 @@ public:
 };
 
 using QuantDotTestTypes =
-    testing::Types<QuantDotTestType<2, quant::CPUFeature::kNone, 256, 8>,
-                   QuantDotTestType<2, quant::CPUFeature::kAVX2, 256, 8>>;
+    testing::Types<QuantDotTestType<2, quant::CPUFeature::kNone, 256, 8>
+#ifdef __AVX2__
+                   ,
+                   QuantDotTestType<2, quant::CPUFeature::kAVX2, 256, 8>
+#endif
+                   >;
 
 TYPED_TEST_SUITE(QuantDotTest, QuantDotTestTypes);
 

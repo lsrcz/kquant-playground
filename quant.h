@@ -15,7 +15,9 @@ namespace quant {
 
 enum class CPUFeature {
   kNone = 0,
+#ifdef __AVX2__
   kAVX2 = 1,
+#endif
 };
 
 #ifdef __AVX2__
