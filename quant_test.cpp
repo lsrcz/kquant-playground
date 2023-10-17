@@ -22,26 +22,30 @@ public:
     std::generate(std::begin(weight), std::end(weight), gen);
     std::generate(std::begin(input), std::end(input), gen);
 
-    quant::Quantize<QuantDotTestType::kQuantBits>(std::span{weight},
-                                                  std::span{quant_weight});
+    quant::Quantize<kQuantBits, kFeature>(std::span{weight},
+                                          std::span{quant_weight});
 
-    quant::Quantize<8>(std::span{input}, std::span{quant_input});
-    quant::Dequantize<QuantDotTestType::kQuantBits>(
-        std::span{quant_weight}, std::span{dequantized_weight});
-    quant::Dequantize<8>(std::span{quant_input}, std::span{dequantized_input});
+    quant::Quantize<8, kFeature>(std::span{input}, std::span{quant_input});
+    quant::Dequantize<kQuantBits, kFeature>(std::span{quant_weight},
+                                            std::span{dequantized_weight});
+    quant::Dequantize<8, kFeature>(std::span{quant_input},
+                                   std::span{dequantized_input});
 
     expected = 0;
     for (int i = 0; i < kNumElements; ++i) {
       expected += dequantized_weight[i] * dequantized_input[i];
     }
   }
+  static constexpr int kQuantBits = QuantDotTestType::kQuantBits;
+  static constexpr quant::CPUFeature kFeature = QuantDotTestType::kFeature;
   static constexpr int kNumSuperBlock = QuantDotTestType::kNumBlock;
+
   static constexpr int kNumElements = kNumSuperBlock * quant::kSuperBlockSize;
   std::array<float, kNumElements> weight{};
   std::array<float, kNumElements> input{};
-  std::array<quant::QuantBlock<QuantDotTestType::kQuantBits>, kNumSuperBlock>
+  std::array<quant::QuantBlock<kQuantBits, kFeature>, kNumSuperBlock>
       quant_weight{};
-  std::array<quant::QuantBlock<8>, kNumSuperBlock> quant_input{};
+  std::array<quant::QuantBlock<8, kFeature>, kNumSuperBlock> quant_input{};
   std::array<float, kNumElements> dequantized_weight{};
   std::array<float, kNumElements> dequantized_input{};
   float expected{};

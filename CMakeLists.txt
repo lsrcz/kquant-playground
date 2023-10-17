@@ -26,9 +26,7 @@ find_package(GTest REQUIRED)
 
 add_library(
   quant OBJECT
-  quant_2bit.cpp
   helper.cpp
-  quant.cpp
   common.h
   helper.h
   print_simd.h
